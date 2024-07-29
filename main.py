@@ -54,6 +54,38 @@ SELECT * FROM answers
 WHERE client != %s OR avaliationid = %s;
 """
 
+query_answers_by_id = """
+SELECT
+  avaliation.id AS avaliationid,
+  avaliation.client,
+  question.id AS questionid,
+  item.score,
+  avaliation.created_at AS timestamp
+FROM
+  avaliation
+  INNER JOIN answer ON avaliation.id = answer.avaliation
+  INNER JOIN item ON item.id = answer.item
+  INNER JOIN question ON question.id = answer.question
+where
+  avaliation.id = %s;
+"""
+
+query_anterior_answers = """
+SELECT
+  avaliation.id AS avaliationid,
+  avaliation.client,
+  question.id AS questionid,
+  item.score,
+  avaliation.created_at AS timestamp
+FROM
+  avaliation
+  INNER JOIN answer ON avaliation.id = answer.avaliation
+  INNER JOIN item ON item.id = answer.item
+  INNER JOIN question ON question.id = answer.question
+where
+  avaliation.id > %s and avaliation.client = %s;
+"""
+
 query_relation = """
     select * from avaliation where avaliation.client = %s and avaliation.id = %s
 """
@@ -83,25 +115,43 @@ def create_question_ratings(answers):
 
 # Calculando a matriz de similaridade entre usuários
 def calculate_similarity(test_question_ratings):
-    user_similarity = 1 - pairwise_distances(test_question_ratings, metric='cosine')
-    return user_similarity
+    test_similarity = 1 - pairwise_distances(test_question_ratings, metric='cosine')
+    return test_similarity
 
 # Função para recomendar questões
-def recommend_questions(test_id, test_question_ratings, user_similarity, questions, num_recommendations=5):
+# Função para recomendar questões
+def recommend_questions(test_id, test_question_ratings, test_similarity, questions, num_recommendations=5):
     if test_id not in test_question_ratings.index:
         raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found.")
 
     test_ratings = test_question_ratings.loc[test_id]
-    similar_users = user_similarity[test_question_ratings.index.get_loc(test_id)]
+    similar_tests = test_similarity[test_question_ratings.index.get_loc(test_id)]
 
-    similar_users_ids = test_question_ratings.index[np.argsort(similar_users)[::-1][1:4]]
+    # Ordenando os IDs dos testes similares (excluindo o próprio teste) por similaridade
+    similar_tests_indices = np.argsort(similar_tests)[::-1][1:4]
+    similar_tests_ids = test_question_ratings.index[similar_tests_indices]
+    
+
+    print(similar_tests_ids)
+    #coletar answers do avaliation, executar: query_answers_by_id e salvar o resultado em target_test_answer
+    #para cada similar_tests_ids, executar: query_answers_by_id e salvar o resultado em similar_tests_answers
+    #calcular novamente a similaridade entre similar_tests_answers e target_test_answer e salvar o resultado em first_similarity
+    
+    #mostrar first_similatiry
+    
+    #para cada similar_tests_ids, coletar o teste anterior a ele, executar: query_anterior_answers e salvar o resultado em similar_tests_anterior_answer
+    #para target_test_answers, coletar o teste anterior a ele, executar: query_anterior_answers e salvar o resultado em target_test_anterior_answer
+    #calcular a similaridade entre similar_tests_anterior_answers e target_test_anterior_answer e salvar o resultado em second_similarity
+    
+    #mostrar second_similarity
+    
 
     unrated_questions = test_ratings[test_ratings == 0].index
 
-    similar_test_ratings = test_question_ratings.loc[similar_users_ids, unrated_questions]
+    similar_test_ratings = test_question_ratings.loc[similar_tests_ids, unrated_questions]
     recommendation_scores = similar_test_ratings.mean(axis=0)
 
-    recommended_questions = recommendation_scores.sort_values()
+    recommended_questions = recommendation_scores.sort_values(ascending=False)
 
     top_recommendations = recommended_questions.head(num_recommendations)
     recommended_questions_info = questions.loc[top_recommendations.index, ['questionid', 'content', 'area']]
@@ -124,8 +174,8 @@ async def recommend_questions_route(avaliation: int, client: int):
         fetch_relation(client, avaliation)
         answers = fetch_answers(client, avaliation)
         test_question_ratings = create_question_ratings(answers)
-        user_similarity = calculate_similarity(test_question_ratings)
-        recommended_questions = recommend_questions(avaliation, test_question_ratings, user_similarity, questions)
+        test_similarity = calculate_similarity(test_question_ratings)
+        recommended_questions = recommend_questions(avaliation, test_question_ratings, test_similarity, questions)
         return {"recommended_questions": recommended_questions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
