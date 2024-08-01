@@ -74,7 +74,7 @@ def query_relation(client, avaliationid):
         result = connection.execute(text(query_relation), params)
         return pd.DataFrame(result.fetchall(), columns=result.keys())
 
-@app.post("/recommend")
+@app.get("/atec/recommend")
 async def get_recommendations(params: QueryParams):
     client = params.client
     avaliationid = params.avaliationid
