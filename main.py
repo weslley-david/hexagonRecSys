@@ -1,181 +1,122 @@
-from typing import List
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import create_engine, text
 import pandas as pd
 import numpy as np
-from sklearn.metrics.pairwise import pairwise_distances
-import psycopg2
-from dotenv import load_dotenv
-import os
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Carrega as variáveis de ambiente do arquivo .env
-load_dotenv()
+DATABASE_URL = "postgresql://postgres.ukxegymnggqugwijeilb:yeu7283hfusi@aws-0-sa-east-1.pooler.supabase.com/postgres"
+engine = create_engine(DATABASE_URL)
 
-# Inicializa FastAPI
 app = FastAPI()
 
-# Função para conectar ao banco de dados e executar a consulta SQL
-def fetch_data(query, params=None):
-    try:
-        # Configurações de conexão utilizando variáveis de ambiente
-        conn = psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
-        )
-        # Executando a consulta
-        if params:
-            df = pd.read_sql_query(query, conn, params=params)
-        else:
-            df = pd.read_sql_query(query, conn)
-    except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
-    finally:
-        conn.close()
-    return df
+class QueryParams(BaseModel):
+    client: int
+    avaliationid: int
 
-# Queries SQL
-query_answers = """
-WITH answers AS (
-    SELECT 
-        avaliation.id AS avaliationid, 
-        avaliation.client, 
-        question.id AS questionid, 
-        item.score, 
+def fetch_answers(client, avaliationid):
+    query_answers = """
+    WITH answers AS (
+        SELECT
+            avaliation.id AS avaliationid,
+            avaliation.client,
+            question.id AS questionid,
+            item.score,
+            avaliation.created_at AS timestamp
+        FROM avaliation
+        INNER JOIN answer ON avaliation.id = answer.avaliation
+        INNER JOIN item ON item.id = answer.item
+        INNER JOIN question ON question.id = answer.question
+    )
+    SELECT * FROM answers
+    WHERE client != :client OR avaliationid = :avaliationid;
+    """
+    params = {'client': client, 'avaliationid': avaliationid}
+    with engine.connect() as connection:
+        result = connection.execute(text(query_answers), params)
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
+
+def fetch_questions():
+    query_questions = """
+    SELECT question.id AS questionid, question.number, question.content AS content, question.area
+    FROM question;
+    """
+    with engine.connect() as connection:
+        result = connection.execute(text(query_questions))
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
+
+def fetch_evaluation_details(avaliation_id, client):
+    query = """
+    SELECT
+        avaliation.id AS avaliationid,
+        avaliation.client,
+        question.id AS questionid,
+        item.score,
         avaliation.created_at AS timestamp
     FROM avaliation
     INNER JOIN answer ON avaliation.id = answer.avaliation
     INNER JOIN item ON item.id = answer.item
     INNER JOIN question ON question.id = answer.question
-)
-SELECT * FROM answers 
-WHERE client != %s OR avaliationid = %s;
-"""
+    WHERE avaliation.id > :avaliation_id AND avaliation.client = :client
+    LIMIT 77;
+    """
+    params = {'client': client, 'avaliation_id': avaliation_id}
+    with engine.connect() as connection:
+        result = connection.execute(text(query), params)
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
 
-query_answers_by_id = """
-SELECT
-  avaliation.id AS avaliationid,
-  avaliation.client,
-  question.id AS questionid,
-  item.score,
-  avaliation.created_at AS timestamp
-FROM
-  avaliation
-  INNER JOIN answer ON avaliation.id = answer.avaliation
-  INNER JOIN item ON item.id = answer.item
-  INNER JOIN question ON question.id = answer.question
-where
-  avaliation.id = %s;
-"""
+def query_relation(client, avaliationid):
+    query_relation = """
+    SELECT * FROM avaliation WHERE avaliation.client = :client AND avaliation.id = :avaliationid;
+    """
+    params = {'client': client, 'avaliationid': avaliationid}
+    with engine.connect() as connection:
+        result = connection.execute(text(query_relation), params)
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
 
-query_anterior_answers = """
-SELECT
-  avaliation.id AS avaliationid,
-  avaliation.client,
-  question.id AS questionid,
-  item.score,
-  avaliation.created_at AS timestamp
-FROM
-  avaliation
-  INNER JOIN answer ON avaliation.id = answer.avaliation
-  INNER JOIN item ON item.id = answer.item
-  INNER JOIN question ON question.id = answer.question
-where
-  avaliation.id > %s and avaliation.client = %s;
-"""
-
-query_relation = """
-    select * from avaliation where avaliation.client = %s and avaliation.id = %s
-"""
-
-query_questions = """
-SELECT question.id AS questionid, question.content AS content, question.area 
-FROM question;
-"""
-
-# Buscando os dados diretamente do banco de dados
-def fetch_answers(client, avaliation):
-    answers = fetch_data(query_answers, (client, avaliation))
-    return answers
-
-def fetch_relation(client, avaliation):
-    relation = fetch_data(query_relation, (client, avaliation))
-    if relation.empty:
-        raise HTTPException(status_code=404, detail=f"No relation between {client} client and avaliation {avaliation}")
-    return relation
-
-questions = fetch_data(query_questions)
-
-# Criando uma matriz de avaliações de usuários e filmes
-def create_question_ratings(answers):
-    test_question_ratings = answers.pivot(index='avaliationid', columns='questionid', values='score').fillna(0)
-    return test_question_ratings
-
-# Calculando a matriz de similaridade entre usuários
-def calculate_similarity(test_question_ratings):
-    test_similarity = 1 - pairwise_distances(test_question_ratings, metric='cosine')
-    return test_similarity
-
-# Função para recomendar questões
-# Função para recomendar questões
-def recommend_questions(test_id, test_question_ratings, test_similarity, questions, num_recommendations=5):
-    if test_id not in test_question_ratings.index:
-        raise HTTPException(status_code=404, detail=f"Test ID {test_id} not found.")
-
-    test_ratings = test_question_ratings.loc[test_id]
-    similar_tests = test_similarity[test_question_ratings.index.get_loc(test_id)]
-
-    # Ordenando os IDs dos testes similares (excluindo o próprio teste) por similaridade
-    similar_tests_indices = np.argsort(similar_tests)[::-1][1:4]
-    similar_tests_ids = test_question_ratings.index[similar_tests_indices]
+@app.post("/recommend")
+async def get_recommendations(params: QueryParams):
+    client = params.client
+    avaliationid = params.avaliationid
     
+    avaliation = query_relation(client, avaliationid)
+    if avaliation.empty:
+        raise HTTPException(status_code=404, detail="Avaliação não encontrada")
 
-    print(similar_tests_ids)
-    #coletar answers do avaliation, executar: query_answers_by_id e salvar o resultado em target_test_answer
-    #para cada similar_tests_ids, executar: query_answers_by_id e salvar o resultado em similar_tests_answers
-    #calcular novamente a similaridade entre similar_tests_answers e target_test_answer e salvar o resultado em first_similarity
-    
-    #mostrar first_similatiry
-    
-    #para cada similar_tests_ids, coletar o teste anterior a ele, executar: query_anterior_answers e salvar o resultado em similar_tests_anterior_answer
-    #para target_test_answers, coletar o teste anterior a ele, executar: query_anterior_answers e salvar o resultado em target_test_anterior_answer
-    #calcular a similaridade entre similar_tests_anterior_answers e target_test_anterior_answer e salvar o resultado em second_similarity
-    
-    #mostrar second_similarity
-    
+    df_primary_answers = fetch_answers(client=client, avaliationid=avaliationid)
+    df_questions = fetch_questions()
 
-    unrated_questions = test_ratings[test_ratings == 0].index
+    pivot_table = df_primary_answers.pivot_table(index='avaliationid', columns='questionid', values='score', fill_value=0)
+    matrix = pivot_table.values
+    similarity_matrix = cosine_similarity(matrix)
+    similarity_df = pd.DataFrame(similarity_matrix, index=pivot_table.index, columns=pivot_table.index)
 
-    similar_test_ratings = test_question_ratings.loc[similar_tests_ids, unrated_questions]
-    recommendation_scores = similar_test_ratings.mean(axis=0)
+    similarity_scores = similarity_df.loc[avaliationid]
+    top_similarities = similarity_scores.sort_values(ascending=False).head(5)
+    top_similarities = top_similarities.drop(avaliationid, errors='ignore')
+    similar_ids = top_similarities.index.tolist()
 
-    recommended_questions = recommendation_scores.sort_values(ascending=False)
+    clients_df = df_primary_answers[['avaliationid', 'client']].drop_duplicates()
+    clients_df = clients_df.set_index('avaliationid')
+    similar_clients = clients_df.loc[similar_ids]
 
-    top_recommendations = recommended_questions.head(num_recommendations)
-    recommended_questions_info = questions.loc[top_recommendations.index, ['questionid', 'content', 'area']]
+    results_list = []
+    for similar_client in similar_clients.itertuples():
+        evaluation_details = fetch_evaluation_details(similar_client.Index, similar_client.client)
+        if not evaluation_details.empty:
+            results_list.append(evaluation_details)
 
-    recommended_questions_list = []
-    for index, row in recommended_questions_info.iterrows():
-        question_info = {
-            "id": row['questionid'],
-            "content": row['content'],
-            "area": row['area']
-        }
-        recommended_questions_list.append(question_info)
-
-    return recommended_questions_list
-
-# Rota FastAPI para recomendar questões
-@app.get("/atec/recommend")
-async def recommend_questions_route(avaliation: int, client: int):
-    try:
-        fetch_relation(client, avaliation)
-        answers = fetch_answers(client, avaliation)
-        test_question_ratings = create_question_ratings(answers)
-        test_similarity = calculate_similarity(test_question_ratings)
-        recommended_questions = recommend_questions(avaliation, test_question_ratings, test_similarity, questions)
-        return {"recommended_questions": recommended_questions}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if results_list:
+        combined_results = pd.concat(results_list, ignore_index=True)
+        pivot_table_2 = combined_results.pivot_table(index='avaliationid', columns='questionid', values='score', fill_value=0)
+        mean_scores = pivot_table_2.mean()
+        evaluation_of_interest = df_primary_answers[df_primary_answers['avaliationid'] == avaliationid]
+        pivot_avaliation_of_interest = evaluation_of_interest.pivot_table(index='avaliationid', columns='questionid', values='score', fill_value=0)
+        evaluation_series = pivot_avaliation_of_interest.loc[avaliationid].squeeze()
+        differences = mean_scores - evaluation_series
+        filtered_differences = differences[differences < 0]
+        sorted_filtered_differences = filtered_differences.sort_values(ascending=True)
+        filtered_questions = df_questions[df_questions['questionid'].isin(sorted_filtered_differences.index)]
+        return {"filtered_questions": filtered_questions.to_dict(orient='records')}
+    else:
+        return {"message": "Nenhum dado retornado para as avaliações similares."}
