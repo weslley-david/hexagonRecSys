@@ -75,9 +75,9 @@ def query_relation(client, avaliationid):
         return pd.DataFrame(result.fetchall(), columns=result.keys())
 
 @app.get("/atec/recommend")
-async def get_recommendations(params: QueryParams):
-    client = params.client
-    avaliationid = params.avaliationid
+async def recommend_questions_route(avaliation: int, client: int):
+    client = client
+    avaliationid = avaliation
     
     avaliation = query_relation(client, avaliationid)
     if avaliation.empty:
