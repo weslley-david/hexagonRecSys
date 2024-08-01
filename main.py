@@ -76,6 +76,7 @@ def query_relation(client, avaliationid):
 
 @app.get("/atec/recommend")
 async def recommend_questions_route(avaliation: int, client: int):
+    
     client = client
     avaliationid = avaliation
     
