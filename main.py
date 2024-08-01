@@ -16,6 +16,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Criar o engine do SQLAlchemy
 engine = create_engine(DATABASE_URL)
 
+
 app = FastAPI()
 
 class QueryParams(BaseModel):
